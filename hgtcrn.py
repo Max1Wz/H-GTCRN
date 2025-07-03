@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 from einops import rearrange
-# from gtcrn_gpt import GTCRN
-# from gtcrn import GTCRN
 from loguru import logger
 
 
@@ -251,22 +249,20 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.en_convs = nn.ModuleList([
-            ConvBlock(3*3, 16, (1, 5), stride=(1, 2), padding=(0, 2),
-                      use_deconv=False, is_last=False),
-            ConvBlock(16, 16, (1, 5), stride=(1, 2), padding=(0, 2),
-                      groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(
-                0, 1), dilation=(1, 1), use_deconv=False),
-            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(
-                0, 1), dilation=(2, 1), use_deconv=False),
-            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(
-                0, 1), dilation=(5, 1), use_deconv=False)
+            # groups=1, use_deconv=False, is_last=False
+            ConvBlock(3*3, 16, (1, 5), stride=(1, 2), padding=(0, 2), groups=1, use_deconv=False, is_last=False),
+            ConvBlock( 16, 16, (1, 5), stride=(1, 2), padding=(0, 2), groups=2, use_deconv=False, is_last=False),
+            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(0, 1), dilation=(1, 1), use_deconv=False),
+            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(0, 1), dilation=(2, 1), use_deconv=False),
+            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(0, 1), dilation=(5, 1), use_deconv=False)
         ])
 
     def forward(self, x):
         en_outs = []
         for i in range(len(self.en_convs)):
+            logger.info(f'Encoder {i} {x.shape}')
             x = self.en_convs[i](x)
+            logger.info(f'Encoder {i} {x.shape}')
             en_outs.append(x)
         return x, en_outs
 
@@ -275,22 +271,19 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.de_convs = nn.ModuleList([
-            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(
-                2*5, 1), dilation=(5, 1), use_deconv=True),
-            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(
-                2*2, 1), dilation=(2, 1), use_deconv=True),
-            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(
-                2*1, 1), dilation=(1, 1), use_deconv=True),
-            ConvBlock(16, 16, (1, 5), stride=(1, 2), padding=(
-                0, 2), groups=2, use_deconv=True, is_last=False),
-            ConvBlock(16, 2, (1, 5), stride=(1, 2), padding=(
-                0, 2), use_deconv=True, is_last=True)
+            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(2*5, 1), dilation=(5, 1), use_deconv=True),
+            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(2*2, 1), dilation=(2, 1), use_deconv=True),
+            GTConvBlock(16, 16, (3, 3), stride=(1, 1), padding=(2*1, 1), dilation=(1, 1), use_deconv=True),
+            ConvBlock(16, 16, (1, 5), stride=(1, 2), padding=(0, 2), groups=2, use_deconv=True, is_last=False),
+            ConvBlock(16,  2, (1, 5), stride=(1, 2), padding=(0, 2), groups=1, use_deconv=True, is_last=True)
         ])
 
     def forward(self, x, en_outs):
         N_layers = len(self.de_convs)
         for i in range(N_layers):
+            logger.info(f'Decoder {i} {x.shape}')
             x = self.de_convs[i](x + en_outs[N_layers-1-i])
+            logger.info(f'Decoder {i} {x.shape}')
         return x
 
 
@@ -307,150 +300,148 @@ class Mask(nn.Module):
         return s
 
 
-class GTCRN(nn.Module):
+class AuxIVA(nn.Module):
+    """
+    简化版 AuxIVA，仅作结构占位，实际可替换为更复杂实现。
+    输入: (B, C, F, T, 2) 复数谱
+    输出: (B, C, F, T, 2) 分离信号
+    """
     def __init__(self):
         super().__init__()
-        self.erb = ERB(65, 64)
-        self.sfe = SFE(3, 1)
 
+    def forward(self, spec_in):
+        # 简单平均模拟分离
+        spec_real = spec_in[..., 0]  # (B, C, F, T)
+        spec_imag = spec_in[..., 1]  # (B, C, F, T)
+        separated_real = torch.mean(spec_real, dim=1, keepdim=True)  # (B, 1, F, T)
+        separated_imag = torch.mean(spec_imag, dim=1, keepdim=True)  # (B, 1, F, T)
+        separated = torch.cat([separated_real, separated_imag], dim=1)  # (B, 2, F, T)
+        # 拼成 (B, 2, F, T, 2)
+        separated = torch.stack([separated_real, separated_imag], dim=-1).repeat(1,2,1,1,1)
+        return separated
+
+class FeatureSelect(nn.Module):
+    """
+    FS模块，输入(B, C, F, T, 2)，输出(B, C*3, T, F)
+    """
+    def __init__(self):
+        super().__init__()
+    def forward(self, spec):
+        # (B, C, F, T, 2) -> (B, C, T, F, 2)
+        spec = spec.permute(0,1,3,2,4)
+        spec_real = spec[..., 0]
+        spec_imag = spec[..., 1]
+        spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
+        feat = torch.stack([spec_mag, spec_real, spec_imag], dim=2)  # (B, C, 3, T, F)
+        feat = feat.view(spec.shape[0], spec.shape[1]*3, spec.shape[2], spec.shape[3])  # (B, C*3, T, F)
+        logger.info(f'FeatureSelect输出 shape: {feat.shape}')
+        return feat
+
+class SingleEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.reduce_conv = nn.Conv2d(36, 9, kernel_size=1)  # 18+18=36
         self.encoder = Encoder()
+    def forward(self, x):
+        logger.info(f'SingleEncoder concat后 shape: {x.shape}')
+        x = self.reduce_conv(x)
+        logger.info(f'SingleEncoder 1x1 conv后 shape: {x.shape}')
+        f, outs = self.encoder(x)
+        return f, outs
 
+class DualEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.reduce_conv1 = nn.Conv2d(18, 9, kernel_size=1)
+        self.reduce_conv2 = nn.Conv2d(18, 9, kernel_size=1)
+        self.encoder1 = Encoder()
+        self.encoder2 = Encoder()
+        self.f_conv = nn.Conv2d(32, 16, kernel_size=1)
+        self.out_conv = nn.Conv2d(32, 16, kernel_size=1)
+    def forward(self, x1, x2):
+        logger.info(f'DualEncoder x1 shape: {x1.shape}, x2 shape: {x2.shape}')
+        x1 = self.reduce_conv1(x1)
+        x2 = self.reduce_conv2(x2)
+        logger.info(f'DualEncoder x1 reduce后 shape: {x1.shape}, x2 reduce后 shape: {x2.shape}')
+        f1, outs1 = self.encoder1(x1)
+        f2, outs2 = self.encoder2(x2)
+        f = torch.cat([f1, f2], dim=1)
+        f = self.f_conv(f)
+        outs = [self.out_conv(torch.cat([o1, o2], dim=1)) for o1, o2 in zip(outs1, outs2)]
+        return f, outs
+
+class HGTCRN(nn.Module):
+    def __init__(self, num_freqs, dual_encoder=True, masking_mode="iva"):
+        super().__init__()
+        self.dual_encoder = dual_encoder
+        self.masking_mode = masking_mode  # "iva" or "noisy"
+        self.erb = ERB(65, 64, nfft=(num_freqs-1)*2)
+        self.sfe = SFE(3, 1)
+        self.fs = FeatureSelect()
+        if dual_encoder:
+            self.encoder = DualEncoder()
+        else:
+            self.encoder = SingleEncoder()
         self.dpgrnn1 = DPGRNN(16, 33, 16)
         self.dpgrnn2 = DPGRNN(16, 33, 16)
-
         self.decoder = Decoder()
-
         self.mask = Mask()
+        self.iva = AuxIVA()
 
-    def forward(self, spec):
-        """
-        spec: (B, F, T, 2)
-        """
-        spec_ref = spec  # (B,F,T,2)
-
-        spec_real = spec[..., 0].permute(0, 2, 1)
-        spec_imag = spec[..., 1].permute(0, 2, 1)
-        spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
-        feat = torch.stack([spec_mag, spec_real, spec_imag],
-                           dim=1)  # (B,3,T,257)
-
-        feat = self.erb.bm(feat)  # (B,3,T,129)
-        feat = self.sfe(feat)     # (B,9,T,129)
-
-        feat, en_outs = self.encoder(feat)
-
-        feat = self.dpgrnn1(feat)  # (B,16,T,33)
-        feat = self.dpgrnn2(feat)  # (B,16,T,33)
-
+    def forward(self, spec_in):
+        B, C, F, T, _ = spec_in.shape
+        Y = spec_in
+        Yiva = self.iva(spec_in)
+        logger.info(f'Y shape: {Y.shape}, Yiva shape: {Yiva.shape}')
+        Y_feat = self.sfe(self.erb.bm(self.fs(Y)))   # (B, 6, T, F')
+        Yiva_feat = self.sfe(self.erb.bm(self.fs(Yiva)))
+        logger.info(f'Y_feat shape: {Y_feat.shape}, Yiva_feat shape: {Yiva_feat.shape}')
+        if self.dual_encoder:
+            feat, en_outs = self.encoder(Y_feat, Yiva_feat)
+        else:
+            feat, en_outs = self.encoder(torch.cat([Y_feat, Yiva_feat], dim=1))
+        logger.info(f'Encoder输出 shape: {feat.shape}')
+        feat = self.dpgrnn1(feat)
+        logger.info(f'dpgrnn1输出 shape: {feat.shape}')
+        feat = self.dpgrnn2(feat)
+        logger.info(f'dpgrnn2输出 shape: {feat.shape}')
         m_feat = self.decoder(feat, en_outs)
-
         m = self.erb.bs(m_feat)
-
-        spec_enh = self.mask(m, spec_ref.permute(0, 3, 2, 1))  # (B,2,T,F)
-        spec_enh = spec_enh.permute(0, 3, 2, 1)  # (B,F,T,2)
-
+        logger.info(f'mask特征 shape: {m.shape}')
+        if self.masking_mode == "iva":
+            ref_spec = Yiva
+            logger.info("Masking on IVA output.")
+        else:
+            ref_spec = Y
+            logger.info("Masking on noisy input.")
+        # ref_spec: [B, C, F, T, 2]
+        ref_spec = ref_spec[:, :2]                  # [B, 2, F, T, 2]
+        ref_spec = ref_spec.permute(0, 1, 3, 2, 4)  # [B, 2, T, F, 2]
+        ref_spec = ref_spec[..., 0]                 # [B, 2, T, F]
+        logger.info(f'ref_spec shape for mask: {ref_spec.shape}')
+        spec_enh = self.mask(m, ref_spec)
+        spec_enh = spec_enh.permute(0,3,2,1)
+        logger.info(f'最终输出 shape: {spec_enh.shape}')
         return spec_enh
 
-# IVA 模块（粗估计器）
-class IVAEstimator(nn.Module):
-    def __init__(self, num_freqs):
-        super().__init__()
-        self.fc = nn.Linear(num_freqs * 4, num_freqs)
-
-    def forward(self, x):
-        # x: (B, C=2, F, T, 2), 最后的2是实虚
-        B, C, F, T, _ = x.shape
-
-        x_real = x[..., 0]  # (B, C, F, T)
-        x_imag = x[..., 1]  # (B, C, F, T)
-
-        # 拼接成 (B, 4, F, T)
-        x_cat = torch.cat([x_real, x_imag], dim=1)  # (B, 4, F, T)
-
-        x_flat = x_cat.permute(0, 3, 1, 2).contiguous().view(B, T, -1)  # (B, T, 4F)
-        out = self.fc(x_flat)  # (B, T, F)
-
-        return out.permute(0, 2, 1).unsqueeze(1)  # (B, 1, F, T)
-
-
-class HybridDualGTCRN(nn.Module):
-    def __init__(self, num_freqs=257):
-        super().__init__()
-        self.iva = IVAEstimator(num_freqs=num_freqs)
-        self.gtcrn = GTCRN()
-
-    def forward(self, x):
-        """
-        x: (B, C=2, F, T, 2), 双通道复数谱图  最后 2 是实虚
-        """
-        # Step 1: IVA
-        logger.info(x.shape)
-        #  torch.Size([1, 2, 257, 63, 2])
-        iva_out = self.iva(x)  # (B, 1, F, T) torch.Size([1, 1, 257, 63])
-
-        # Step 2: 幅度特征
-        x_real = x[:, 0, :, :, 0]  # (B, F, T)
-        x_imag = x[:, 0, :, :, 1]  # (B, F, T)
-        x_mag = torch.sqrt(x_real**2 + x_imag**2 + 1e-12)  # (B, F, T)
-        x_mag = x_mag.unsqueeze(1)  # (B, 1, F, T)
-
-        # Step 3: 拼接
-        hybrid_input = torch.cat([iva_out, x_mag], dim=1)  # (B, 2, F, T)
-        hybrid_input = hybrid_input.permute(0, 2, 3, 1)    # (B, F, T, 2) 给 GTCRN，最后 2 是通道数
-        logger.info(hybrid_input.shape)
-        #  torch.Size([1, 257, 63, 2])
-
-        out = self.gtcrn(hybrid_input)  # (B, F, T, 2)，这里的 2 是实虚
-
-        return out
-
-
 if __name__ == "__main__":
-    in_ch2_wav = torch.randn(2, 16000) # (C=2, T=16000)
-    in_ch2_spec = torch.stft(
-        in_ch2_wav, 
-        n_fft=512, 
-        hop_length=256, 
-        win_length=512, 
-        window=torch.hann_window(512).pow(0.5),
-        return_complex=True)
-    # logger.info(in_ch2_spec.shape)     # (C=2, F=257, T=63)
-
-    in_ch2_spec = torch.view_as_real(in_ch2_spec) # (C=2, F=257, T=63, 2)
-    # logger.info(in_ch2_spec.shape)
-
-    in_ch2_spec = in_ch2_spec.unsqueeze(0) # B=1 C=2 F=257 T=63 2
-    logger.info(in_ch2_spec.shape)
-
-    model = HybridDualGTCRN(num_freqs=in_ch2_spec.shape[2])
+    # 测试输入
+    in_ch2_spec = torch.randn(1, 2, 257, 63, 2)
+    model = HGTCRN(num_freqs=in_ch2_spec.shape[2], dual_encoder=False, masking_mode="iva")
     out = model(in_ch2_spec)
-    # 输出单通道
-
-    print("输入 shape:", in_ch2_spec.shape)      # (B, C=2, F, T)
-    print("输出 shape:", out.shape)    # (B, F, T, 2)
-    # 输入 shape: torch.Size([1, 2, 257, 63])
-    # 输出 shape: torch.Size([1, 257, 63, 2])
-
-    out_real = out[..., 0]
-    out_imag = out[..., 1]
-    out_spec = torch.complex(out_real, out_imag)
-
-    out_ch2_wav = torch.istft(
-        out_spec,
-        n_fft=512,
-        hop_length=256,
-        win_length=512,
-        window=torch.hann_window(512).pow(0.5),
-    )
-
-    logger.info(out_ch2_wav.shape)
-
+    print("输入 shape:", in_ch2_spec.shape)      # (1, 2, 257, 63, 2)
+    print("输出 shape:", out.shape)             # (1, 257, 63, 2)
 
     """complexity count"""
     from ptflops import get_model_complexity_info
     flops, params = get_model_complexity_info(model, (2, 257, 63, 2), as_strings=True,
                                               print_per_layer_stat=False, verbose=True)
     print(flops, params)
-    # 50.49 MMac 288.12 k
 
-    # paper 43.20 MMac 24.39k
+    # model = HGTCRN(num_freqs=in_ch2_spec.shape[2], dual_encoder=True, masking_mode="iva")
+    # model = HGTCRN(num_freqs=in_ch2_spec.shape[2], dual_encoder=True, masking_mode="noisy")
+    # 61.52 MMac 33.01 k
+
+    # model = HGTCRN(num_freqs=in_ch2_spec.shape[2], dual_encoder=False, masking_mode="noisy")
+    # model = HGTCRN(num_freqs=in_ch2_spec.shape[2], dual_encoder=False, masking_mode="iva")
+    # 43.5 MMac 24.0 k
