@@ -426,11 +426,41 @@ class HGTCRN(nn.Module):
 
 if __name__ == "__main__":
     # 测试输入
-    in_ch2_spec = torch.randn(1, 2, 257, 63, 2)
+    in_ch2_wav = torch.randn(2, 16000) # (C=2, T=16000)
+    in_ch2_spec = torch.stft(
+        in_ch2_wav, 
+        n_fft=512, 
+        hop_length=256, 
+        win_length=512, 
+        window=torch.hann_window(512).pow(0.5),
+        return_complex=True)
+    # logger.info(in_ch2_spec.shape)     # (C=2, F=257, T=63)
+
+    in_ch2_spec = torch.view_as_real(in_ch2_spec) # (C=2, F=257, T=63, 2)
+    # logger.info(in_ch2_spec.shape)
+
+    in_ch2_spec = in_ch2_spec.unsqueeze(0) # B=1 C=2 F=257 T=63 2
+    logger.info(in_ch2_spec.shape)
+
+    # in_ch2_spec = torch.randn(1, 2, 257, 63, 2)
+
     model = HGTCRN(num_freqs=in_ch2_spec.shape[2], dual_encoder=False, masking_mode="iva")
     out = model(in_ch2_spec)
     print("输入 shape:", in_ch2_spec.shape)      # (1, 2, 257, 63, 2)
     print("输出 shape:", out.shape)             # (1, 257, 63, 2)
+
+    out_real = out[..., 0]
+    out_imag = out[..., 1]
+    out_spec = torch.complex(out_real, out_imag)
+
+    out_ch2_wav = torch.istft(
+        out_spec,
+        n_fft=512,
+        hop_length=256,
+        win_length=512,
+        window=torch.hann_window(512).pow(0.5),
+    )
+    logger.info(out_ch2_wav.shape)
 
     """complexity count"""
     from ptflops import get_model_complexity_info
