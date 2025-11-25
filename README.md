@@ -1,5 +1,8 @@
 # H-GTCRN
-This repository is the official implementation of the Interspeech2025 paper: A Lightweight Hybrid Dual Channel Speech Enhancement System under Low-SNR Conditions. For more details, please refer to the [arXiv preprint](https://arxiv.org/abs/2505.19597).
+This repository is the un-official implementation of the Interspeech2025 paper: A Lightweight Hybrid Dual Channel Speech Enhancement System under Low-SNR Conditions. For more details, please refer to the [arXiv preprint](https://arxiv.org/abs/2505.19597).
+
+# TODO
+dual channel rir generation will finished later.
 
 | ![The framework of our proposed system.](./figures/model.png) |
 |:---------------------:|
@@ -31,3 +34,5 @@ We gratefully acknowledge the following resources that made this project possibl
 - [GTCRN](https://github.com/Xiaobin-Rong/gtcrn): SOTA lightweight speech enhancement model architecture.
 - [SE-train](https://github.com/Xiaobin-Rong/SEtrain): Excellent training code template for DNN-based speech enhancement.
 - [pyroomacoustics](https://github.com/LCAV/pyroomacoustics)
+BSS Auxiliary-function-based Indepednent vector analysis
+- [AuxIVA](https://github.com/XianruiWang/AuxIVA)
