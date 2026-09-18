@@ -5,11 +5,23 @@ import argparse
 import torch
 import soundfile as sf
 
-from gtcrn_iva import GTCRN_IVA
+
+VARIANTS = {
+    "noisy": {
+        "module": "masking_on_noisy.gtcrn_iva",
+        "checkpoint": "./masking_on_noisy/best_model_0121.tar",
+    },
+    "iva": {
+        "module": "masking_on_iva.gtcrn_iva",
+        "checkpoint": "./masking_on_iva/best_model_0110.tar",
+    },
+}
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Batch inference for GTCRN_IVA")
+    parser = argparse.ArgumentParser(
+        description="Batch inference for H-GTCRN (masking on noisy or on IVA)"
+    )
     parser.add_argument(
         "--input_dir",
         type=str,
@@ -23,10 +35,17 @@ def parse_args():
         help="Directory to save enhanced wav files",
     )
     parser.add_argument(
+        "--variant",
+        type=str,
+        default="noisy",
+        choices=sorted(VARIANTS.keys()),
+        help="Masking variant: noisy (CRM x mixture) or iva (CRM x IVA speech)",
+    )
+    parser.add_argument(
         "--checkpoint",
         type=str,
-        default="./checkpoints/best_model_0121.tar",
-        help="Path to model checkpoint",
+        default=None,
+        help="Path to model checkpoint (defaults follow --variant)",
     )
     parser.add_argument(
         "--device",
@@ -43,15 +62,18 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_model(checkpoint_path: str, device: torch.device) -> GTCRN_IVA:
-    model = GTCRN_IVA().to(device)
+def load_model(variant: str, checkpoint_path: str, device: torch.device):
+    import importlib
+
+    module = importlib.import_module(VARIANTS[variant]["module"])
+    model = module.GTCRN_IVA().to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
     return model
 
 
-def enhance_one_file(model: GTCRN_IVA, wav_path: str, out_path: str, device: torch.device):
+def enhance_one_file(model, wav_path: str, out_path: str, device: torch.device):
     noisy, fs = sf.read(wav_path, dtype="float32")
     if fs != 16000:
         raise ValueError(f"Expected 16000 Hz, but got {fs} for file: {wav_path}")
@@ -70,10 +92,11 @@ def enhance_one_file(model: GTCRN_IVA, wav_path: str, out_path: str, device: tor
 def main():
     args = parse_args()
     device = torch.device(args.device)
+    checkpoint = args.checkpoint or VARIANTS[args.variant]["checkpoint"]
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    model = load_model(args.checkpoint, device)
+    model = load_model(args.variant, checkpoint, device)
 
     wav_files = sorted(
         [
